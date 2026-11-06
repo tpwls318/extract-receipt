@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ 
-  apiKey: process.env.GEMINI_API_KEY,
-});
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 const receiptSchema = {
   type: Type.OBJECT,
@@ -31,12 +29,30 @@ const receiptSchema = {
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("file") as File;
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "서버에 GEMINI_API_KEY 환경변수가 설정되지 않았습니다." },
+        { status: 500 }
+      );
+    }
 
-    if (!file) {
+    const formData = await req.formData();
+    const file = formData.get("file");
+
+    if (!file || !(file instanceof File)) {
       return NextResponse.json({ error: "파일이 업로드되지 않았습니다." }, { status: 400 });
     }
+
+    if (!file.type.startsWith("image/")) {
+      return NextResponse.json({ error: "이미지 형식의 파일만 업로드할 수 있습니다." }, { status: 400 });
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json({ error: "파일 크기는 10MB 이하여야 합니다." }, { status: 400 });
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
 
     const arrayBuffer = await file.arrayBuffer();
     const base64Data = Buffer.from(arrayBuffer).toString("base64");
@@ -66,7 +82,7 @@ export async function POST(req: NextRequest) {
     // 3.5-flash 우선 시도 -> 503/에러 발생 시 3.5-flash-lite로 폴백
     const candidateModels = ["gemini-3.5-flash", "gemini-3.5-flash-lite"];
     let responseText = "";
-    let lastError: any = null;
+    let lastError: unknown = null;
 
     for (const model of candidateModels) {
       try {
@@ -75,7 +91,7 @@ export async function POST(req: NextRequest) {
           contents,
           config,
         });
-        responseText = response.text || "{}";
+        responseText = response.text || "";
         if (responseText) break;
       } catch (err) {
         lastError = err;
@@ -89,11 +105,9 @@ export async function POST(req: NextRequest) {
 
     const parsedData = JSON.parse(responseText);
     return NextResponse.json({ success: true, data: parsedData });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("추출 에러:", error);
-    return NextResponse.json(
-      { error: error?.message || "데이터 추출 실패" }, 
-      { status: 500 }
-    );
+    const message = error instanceof Error ? error.message : "데이터 추출 실패";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
